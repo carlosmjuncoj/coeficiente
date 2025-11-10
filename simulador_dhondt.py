@@ -1,20 +1,22 @@
 # simulador_dhondt.py
-# Editor robusto SIN data_editor: estable, recalcula en vivo al editar
-# Por defecto: 10 partidos (incluye 5 originales) y 1000 votos c/u
-# Por defecto: 30 escaños
-# La tabla de cocientes usa divisores 1..escaños y resalta los "escaños" cocientes más altos
+# Editor robusto sin data_editor, AHORA con IDs de fila estables por widget.
+# - Soluciona el "solo actualiza a la segunda" en Streamlit Cloud.
+# - 10 partidos por defecto, 1000 votos c/u.
+# - 30 escaños por defecto.
+# - Matriz de cocientes 1..N y top-N resaltado.
 
 import hashlib
 import io
+import uuid
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Simulador D'Hondt (Perú)", page_icon="🧮", layout="wide")
-st.title("🧮 Simulador de Cifra Repartidora (D’Hondt) – Perú (modo estable)")
+st.title("🧮 Simulador de Cifra Repartidora (D’Hondt) – Perú (IDs estables)")
 
-# -- 10 partidos por defecto, todos con 1000 votos --
-INIT = [
+# ---------- Datos iniciales ----------
+BASE_ROWS = [
     {"Partido": "Fuerza Popular",  "Votos": 1000},
     {"Partido": "Peru Libre",      "Votos": 1000},
     {"Partido": "Renovación",      "Votos": 1000},
@@ -26,9 +28,25 @@ INIT = [
     {"Partido": "Partido 9",       "Votos": 1000},
     {"Partido": "Partido 10",      "Votos": 1000},
 ]
+
 REQUIRED_COLS = ["Partido", "Votos"]
 
-# ---------- Utilidades ----------
+def _mk_row(partido="", votos=0):
+    return {"id": str(uuid.uuid4()), "Partido": partido, "Votos": int(votos)}
+
+def _init_rows_with_ids():
+    return [{**_mk_row(r["Partido"], r["Votos"])} for r in BASE_ROWS]
+
+# ---------- Estado ----------
+if "rows" not in st.session_state:
+    st.session_state.rows = _init_rows_with_ids()
+
+# upgrade de estados antiguos sin id
+for r in st.session_state.rows:
+    if "id" not in r:
+        r["id"] = str(uuid.uuid4())
+
+# ---------- Utils ----------
 def sanitize(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     if "Partido" not in df.columns: df["Partido"] = ""
@@ -58,10 +76,6 @@ def color_for(name: str):
     t = (h % 1000) / 1000.0
     return plt.cm.tab20(t % 1.0)
 
-# ---------- Estado ----------
-if "rows" not in st.session_state:
-    st.session_state.rows = INIT.copy()
-
 # ---------- Sidebar ----------
 with st.sidebar:
     seats = st.number_input("Escaños a repartir", min_value=1, max_value=200, value=30, step=1,
@@ -70,26 +84,33 @@ with st.sidebar:
     st.markdown("---")
     colA, colB, colC = st.columns(3)
     if colA.button("➕ Agregar fila"):
-        st.session_state.rows.append({"Partido": "", "Votos": 0})
+        st.session_state.rows.append(_mk_row("Nuevo partido", 0))
     if colB.button("➖ Quitar última"):
         if st.session_state.rows:
             st.session_state.rows.pop()
     if colC.button("↺ Restablecer"):
-        st.session_state.rows = INIT.copy()
+        st.session_state.rows = _init_rows_with_ids()
 
-# ---------- Editor fila por fila ----------
-st.subheader("📋 Partidos y votos (edición en vivo, sin data_editor)")
+# ---------- Editor fila por fila con IDs estables ----------
+st.subheader("📋 Partidos y votos (edición en vivo con IDs estables)")
 new_rows = []
 for i, row in enumerate(st.session_state.rows):
+    rid = row["id"]  # ID estable
     with st.container():
-        c1, c2 = st.columns([3, 1], gap="small")
-        name = c1.text_input(f"Partido #{i+1}", value=row.get("Partido",""), key=f"name_{i}")
-        votes = c2.number_input("Votos", min_value=0, step=1, value=int(row.get("Votos",0)), key=f"votes_{i}")
-        new_rows.append({"Partido": name, "Votos": int(votes)})
+        c1, c2, c3 = st.columns([3, 1, 0.6], gap="small")
+        name = c1.text_input(f"Partido #{i+1}", value=row.get("Partido",""), key=f"name_{rid}")
+        votes = c2.number_input("Votos", min_value=0, step=1, value=int(row.get("Votos",0)), key=f"votes_{rid}")
+        # Botón para eliminar fila específica (opcional)
+        if c3.button("🗑️", key=f"del_{rid}"):
+            # saltamos añadir esta fila -> se elimina
+            continue
+        new_rows.append({"id": rid, "Partido": name, "Votos": int(votes)})
 
-# Fuente de verdad
+# Fuente de verdad actualizada
 st.session_state.rows = new_rows
-df = sanitize(pd.DataFrame(st.session_state.rows, columns=REQUIRED_COLS))
+
+# DataFrame para cálculos
+df = sanitize(pd.DataFrame(st.session_state.rows))
 
 # ---------- Cálculos ----------
 total_votes = int(df["Votos"].sum())
@@ -135,11 +156,9 @@ for _, r in df.iterrows():
     for d in divisores:
         m.at[r["Partido"], f"÷{d}"] = r["Votos"] / d
 
-# Redondeo para visualizar, pero el ranking ya se tomó con precisión en dhondt()
+# Redondeo visual; ranking sin redondear para top-N
 m_int = m.round(0).astype(int)
-
-# Resaltar los N (=seats) cocientes más altos (coinciden con los escaños)
-flat = m.stack().sort_values(ascending=False).head(int(seats))  # usar valores sin redondear para el top-N
+flat = m.stack().sort_values(ascending=False).head(int(seats))
 mask = pd.DataFrame(False, index=m.index, columns=m.columns)
 for idx, col in flat.index:
     mask.loc[idx, col] = True
