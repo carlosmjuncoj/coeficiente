@@ -1,8 +1,8 @@
-# simulador_dhondt.py (versión Cloud-safe con formulario + IDs estables)
-# - Edición dentro de st.form("editor") con botón "Aplicar cambios"
-# - Previene el bug "solo actualiza a la segunda" en Streamlit Cloud
-# - 10 partidos por defecto (1000 votos c/u), 30 escaños por defecto
-# - Matriz de cocientes 1..N (N=escaños) con top-N resaltado
+# simulador_dhondt.py — Cloud-safe definitivo
+# - IDs de fila estables (UUID)
+# - Edición dentro de st.form
+# - Al aplicar cambios: leo SIEMPRE desde st.session_state[...] y luego st.rerun()
+# - 10 partidos por defecto (1000 c/u), 30 escaños, matriz 1..N con top-N resaltado
 
 import hashlib
 import io
@@ -88,28 +88,37 @@ with st.sidebar:
     if colC.button("↺ Restablecer"):
         st.session_state.rows = _init_rows_with_ids()
 
-# ---------- formulario de edición (clave para Cloud) ----------
-st.subheader("📋 Partidos y votos (usa “Aplicar cambios” para guardar)")
+# ---------- formulario de edición ----------
+st.subheader("📋 Partidos y votos (usa “Aplicar cambios”)")
 with st.form("editor", clear_on_submit=False):
-    new_rows = []
-    remove_ids = []
+    # Render de widgets (las variables locales NO se usarán para guardar; solo para pintar)
     for i, row in enumerate(st.session_state.rows):
         rid = row["id"]
         c1, c2, c3 = st.columns([3, 1, 0.6], gap="small")
-        name = c1.text_input(f"Partido #{i+1}", value=row.get("Partido",""), key=f"name_{rid}")
-        votes = c2.number_input("Votos", min_value=0, step=1, value=int(row.get("Votos",0)), key=f"votes_{rid}")
-        rm = c3.checkbox("Quitar", value=False, key=f"rm_{rid}")
-        if rm:
-            remove_ids.append(rid)
-        else:
-            new_rows.append({"id": rid, "Partido": name, "Votos": int(votes)})
+        c1.text_input(f"Partido #{i+1}", value=row.get("Partido",""), key=f"name_{rid}")
+        c2.number_input("Votos", min_value=0, step=1, value=int(row.get("Votos",0)), key=f"votes_{rid}")
+        c3.checkbox("Quitar", value=False, key=f"rm_{rid}")
+    submitted = st.form_submit_button("✅ Aplicar cambios", use_container_width=True)
 
-    submitted = st.form_submit_button("✅ Aplicar cambios")
-
-# aplica cambios del form SOLO cuando se pulsa el botón
+# aplica cambios SOLO cuando se pulsa el botón
 if submitted:
+    new_rows = []
+    for row in st.session_state.rows:
+        rid = row["id"]
+        # Leer SIEMPRE desde st.session_state para evitar valores de una corrida previa
+        name = st.session_state.get(f"name_{rid}", row.get("Partido",""))
+        votes = int(st.session_state.get(f"votes_{rid}", row.get("Votos",0)) or 0)
+        remove = bool(st.session_state.get(f"rm_{rid}", False))
+        if not remove:
+            new_rows.append({"id": rid, "Partido": name, "Votos": votes})
+        else:
+            # limpiar keys del eliminado para no reciclar estado
+            for k in (f"name_{rid}", f"votes_{rid}", f"rm_{rid}"):
+                if k in st.session_state:
+                    del st.session_state[k]
     st.session_state.rows = new_rows
-    st.success("Cambios aplicados.")
+    st.toast("Cambios aplicados.", icon="✅")
+    st.rerun()  # fuerza rerun con el nuevo estado aplicado
 
 # ---------- cálculos ----------
 df = sanitize(pd.DataFrame(st.session_state.rows, columns=["id", *REQUIRED_COLS]).drop(columns=["id"]))
